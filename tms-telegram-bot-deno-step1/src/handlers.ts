@@ -17,18 +17,18 @@ const KB_UNIT  = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_
 const KB_PAID  = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
 const RM       = { remove_keyboard: true } as const;
 
-/* ============= идемпотентность ============ */
+/* ============= идемпотентность/дебаунс ============ */
 
 // глобальный мьютекс на чат
 const processing = new Set<number>();
 
-// drop дубликатов доставок
-const seenUpdates = new Set<string>();       // `${chatId}:${update_id}`
-const seenMessages = new Set<string>();      // `${chatId}:${message_id}`
+// дроп дубликатов Telegram
+const seenUpdates = new Set<string>();   // `${chatId}:${update_id}`
+const seenMessages = new Set<string>();  // `${chatId}:${message_id}`
 
-// дебаунс одинаковых подсказок (по ключу вопроса)
+// дебаунс одинаковых подсказок
 const lastPrompt = new Map<number, { key: string; ts: number }>();
-const PROMPT_DEBOUNCE_MS = 8000;
+const PROMPT_DEBOUNCE_MS = 2000;
 
 /* =============== ENTRYPOINT =============== */
 
@@ -37,18 +37,16 @@ export async function onUpdate(update: Update) {
   if (!msg) return;
 
   const chatId = msg.chat.id;
-  const dedupeKeyU = `${chatId}:${update.update_id}`;
-  const dedupeKeyM = msg.message_id ? `${chatId}:${msg.message_id}` : "";
+  const kU = `${chatId}:${update.update_id}`;
+  const kM = msg.message_id ? `${chatId}:${msg.message_id}` : "";
 
-  // дубликаты -> игнор
-  if (seenUpdates.has(dedupeKeyU) || (dedupeKeyM && seenMessages.has(dedupeKeyM))) return;
-  seenUpdates.add(dedupeKeyU);
-  if (dedupeKeyM) seenMessages.add(dedupeKeyM);
-  // ограничим память
+  if (seenUpdates.has(kU) || (kM && seenMessages.has(kM))) return;
+  seenUpdates.add(kU);
+  if (kM) seenMessages.add(kM);
   if (seenUpdates.size > 2000) seenUpdates.clear();
   if (seenMessages.size > 4000) seenMessages.clear();
 
-  if (processing.has(chatId)) return; // уже обрабатываем предыдущее сообщение
+  if (processing.has(chatId)) return;
   processing.add(chatId);
   try {
     await handle(msg);
@@ -66,7 +64,7 @@ async function handle(msg: Message) {
 
   // глобальные команды
   if (t === "/start" || t === "/cancel") return ready(chatId);
-  if (t === "dashboard") { await send(chatId, DASHBOARD_URL, KB_MAIN); return; }
+  if (t === "dashboard") { send(chatId, DASHBOARD_URL, KB_MAIN); return; }
   if (t === "new report") return startFlow(chatId);
 
   const state = getState(chatId) as any as { step: Step; data?: any };
@@ -127,11 +125,11 @@ async function handle(msg: Message) {
       // мгновенный ответ пользователю и перевод в idle
       const cur = getState(chatId) as any;
       setState(chatId, { step: "idle", data: cur.data });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saving…", reply_markup: RM });
+      send(chatId, "Saving…", RM);
 
       // фон: загрузка+запись+финальный ответ
       finalizeAsync(msg, file).catch(() => {
-        sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Error while saving. Try again.", reply_markup: KB_MAIN });
+        send(chatId, "Error while saving. Try again.", KB_MAIN);
         reset(chatId);
       });
       return;
@@ -148,7 +146,7 @@ async function finalizeAsync(msg: Message, file: { file_id: string; kind: "photo
   const chatId = msg.chat.id;
 
   const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
-  if (!fUrl) { await send(chatId, "Cannot fetch file.", KB_MAIN); reset(chatId); return; }
+  if (!fUrl) { send(chatId, "Cannot fetch file.", KB_MAIN); reset(chatId); return; }
 
   const fr = await fetch(fUrl.url);
   const buf = new Uint8Array(await fr.arrayBuffer());
@@ -168,35 +166,37 @@ async function finalizeAsync(msg: Message, file: { file_id: string; kind: "photo
 
   await sheetsAppend(row);
 
-  await send(chatId, "Saved. " + link, RM);
-  await send(chatId, "Ready.", KB_MAIN);
+  send(chatId, "Saved. " + link, RM);
+  send(chatId, "Ready.", KB_MAIN);
   reset(chatId);
 }
 
 /* =============== HELPERS =============== */
 
-async function ready(chatId: number) {
+function ready(chatId: number) {
   reset(chatId);
-  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: KB_MAIN });
-}
-async function startFlow(chatId: number) {
-  reset(chatId);
-  setState(chatId, { step: "await_unit_type" } as any);
-  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Unit:", reply_markup: KB_UNIT });
+  send(chatId, "Ready.", KB_MAIN);
 }
 
-async function askOnce(chatId: number, key: string, text: string, reply_markup?: any) {
+function startFlow(chatId: number) {
+  reset(chatId);
+  setState(chatId, { step: "await_unit_type" } as any);
+  send(chatId, "Unit:", KB_UNIT);
+}
+
+// fire-and-forget; не ждём сеть
+function askOnce(chatId: number, key: string, text: string, reply_markup?: any) {
   const now = Date.now();
   const last = lastPrompt.get(chatId);
   if (!last || last.key !== key || now - last.ts > PROMPT_DEBOUNCE_MS) {
-    await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) });
+    void sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) }).catch(() => {});
     lastPrompt.set(chatId, { key, ts: now });
-    // чистка
     if (lastPrompt.size > 2000) lastPrompt.clear();
   }
 }
-async function send(chatId: number, text: string, reply_markup?: any) {
-  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) });
+// fire-and-forget helper
+function send(chatId: number, text: string, reply_markup?: any) {
+  void sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) }).catch(() => {});
 }
 
 function who(m: Message) { return m.from?.username ? "@"+m.from.username : [m.from?.first_name, m.from?.last_name].filter(Boolean).join(" "); }
