@@ -13,7 +13,7 @@ export async function onUpdate(update: Update) {
   const chatId = msg.chat.id;
   const text = getText(msg);
 
-  // entry points
+  // entry
   if (text === "/start") {
     await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
     reset(chatId);
@@ -39,36 +39,47 @@ export async function onUpdate(update: Update) {
         await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Trailer #:" });
         return;
       }
-      // тихо повторим выбор без спама
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Choose Truck or Trailer", reply_markup: kb_unit });
       return;
     }
 
     case "await_truck_number": {
-      if (!text) break;
-      setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: text, unitType: "Truck" } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Describe the issue:" });
+      if (text && text !== "Truck" && text !== "Trailer") {
+        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: text, unitType: "Truck" } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Describe the issue:" });
+        return;
+      }
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Truck #: enter a number" });
       return;
     }
 
     case "await_trailer_number": {
-      if (!text) break;
-      setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: text, unitType: "Trailer" } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Truck # with this trailer:" });
+      if (text && text !== "Truck" && text !== "Trailer") {
+        setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: text, unitType: "Trailer" } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Truck # with this trailer:" });
+        return;
+      }
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Trailer #: enter a number" });
       return;
     }
 
     case "await_trailer_truck_number": {
-      if (!text) break;
-      setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: text } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Describe the issue:" });
+      if (text && text !== "Truck" && text !== "Trailer") {
+        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: text } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Describe the issue:" });
+        return;
+      }
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Truck # with this trailer: enter a number" });
       return;
     }
 
     case "await_description": {
-      if (!text) break;
-      setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: text } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Paid By:", reply_markup: kb_paid });
+      if (text) {
+        setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: text } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Paid By:", reply_markup: kb_paid });
+        return;
+      }
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Describe the issue:" });
       return;
     }
 
@@ -78,25 +89,21 @@ export async function onUpdate(update: Update) {
         await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Notes (optional). Send text or '-' to skip:" });
         return;
       }
-      // неправильный ввод — МОЛЧИМ, чтобы не спамить
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Choose: company or driver", reply_markup: kb_paid });
       return;
     }
 
     case "await_notes": {
       setState(chatId, { step: "await_invoice", data: { ...(state.data ?? {}), notes: (text && text !== "-") ? text : undefined } });
-      // убираем клавиатуру, чтобы случайно не нажимали
-      await sendMessage(TELEGRAM_TOKEN, {
-        chat_id: chatId,
-        text: "Send invoice (photo or PDF):",
-        reply_markup: { remove_keyboard: true }
-      });
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Send invoice (photo or PDF):", reply_markup: { remove_keyboard: true } });
       return;
     }
 
     case "await_invoice": {
       const file = extractFileId(msg);
       if (!file) {
-        // игнорируем любой текст/шум, не напоминаем постоянно
+        // единичный мягкий ремайндер
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Need a photo or a document (PDF/JPG)." });
         return;
       }
       const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
@@ -118,21 +125,18 @@ export async function onUpdate(update: Update) {
       const comments = data.notes ?? "";
       const reportedBy = who(msg);
 
-      // A..H: Date | Asset | Repair | Total | PaidBy | ReportedBy | InvoiceLink | Comments
+      // A..H
       const row = [dateStr, asset, repair, "", paidBy, reportedBy, link, comments];
-
       await sheetsAppend(row);
 
-      // ответ + возвращаем основную клавиатуру
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link });
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
-
       reset(chatId);
       return;
     }
   }
 
-  // idle/неизвестный шаг — ничего не отправляем
+  // idle/неизвестно — не спамим
 }
 
 function who(m: Message) {
