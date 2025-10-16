@@ -1,42 +1,21 @@
 import type { Update, Message } from "grammy/types";
-
-type ApiSendMessage = {
-  chat_id: number;
-  text: string;
-  reply_markup?: any;
-  parse_mode?: "MarkdownV2" | "HTML";
-  reply_to_message_id?: number;
-  disable_web_page_preview?: boolean;
-};
-type ApiSendChatAction = {
-  chat_id: number;
-  action: string; // 'typing' etc.
-};
-type ApiGetFile = { file_id: string };
-
 const base = (token: string) => `https://api.telegram.org/bot${token}`;
 
-export async function sendMessage(token: string, payload: ApiSendMessage) {
+export async function sendMessage(token: string, payload: any) {
   const r = await fetch(base(token) + "/sendMessage", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) {
-    console.error("sendMessage failed", await r.text());
-  }
+  if (!r.ok) console.error("sendMessage failed", await r.text());
 }
-
-export async function sendAction(token: string, payload: ApiSendChatAction) {
-  await fetch(base(token) + "/sendChatAction", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+export function getText(m?: Message): string | undefined { return m?.text ?? m?.caption ?? undefined; }
+export async function getFileURL(token: string, file_id: string): Promise<{url: string} | null> {
+  const gf = await fetch(base(token) + "/getFile", { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({ file_id })});
+  if (!gf.ok) { console.error("getFile failed", await gf.text()); return null; }
+  const j = await gf.json();
+  const path = j?.result?.file_path as string | undefined;
+  if (!path) return null;
+  return { url: `https://api.telegram.org/file/bot${token}/${path}` };
 }
-
-export function getText(m?: Message): string | undefined {
-  return m?.text ?? m?.caption ?? undefined;
-}
-
 export type { Update, Message };
