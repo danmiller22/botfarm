@@ -1,27 +1,43 @@
-export type ReportState =
-  | { step: "idle" }
-  | { step: "await_unit_type" }
-  | { step: "await_truck_number"; data: Partial<ReportData> }
-  | { step: "await_trailer_number"; data: Partial<ReportData> }
-  | { step: "await_trailer_truck_number"; data: Partial<ReportData> }
-  | { step: "await_description"; data: Partial<ReportData> }
-  | { step: "await_paidby"; data: Partial<ReportData> }
-  | { step: "await_notes"; data: Partial<ReportData> }
-  | { step: "await_invoice"; data: Partial<ReportData> };
+// KV-персистентное состояние диалога
+type Step =
+  | "idle" | "await_unit_type" | "await_truck_number" | "await_trailer_number"
+  | "await_trailer_truck_number" | "await_description" | "await_paidby"
+  | "await_total" | "await_notes" | "await_invoice";
 
 export type ReportData = {
-  unitType: "Truck" | "Trailer";
+  unitType?: "Truck" | "Trailer";
   truck?: string;
   trailer?: string;
-  description: string;
-  paidBy: "company" | "driver";
+  description?: string;
+  paidBy?: "company" | "driver";
+  total?: string;
   notes?: string;
-  file_id?: string;
-  file_kind?: "photo" | "document";
-  invoice_url?: string;
 };
 
-const sessions = new Map<number, ReportState>();
-export function getState(chatId: number): ReportState { return sessions.get(chatId) ?? { step: "idle" }; }
-export function setState(chatId: number, state: ReportState) { sessions.set(chatId, state); }
-export function reset(chatId: number) { sessions.set(chatId, { step: "idle" }); }
+export type ChatState = { step: Step; data?: ReportData };
+
+const kv = await Deno.openKv();
+const KEY = (chatId: number) => ["state", chatId];
+
+// читаем; если нет — idle
+export async function getState(chatId: number): Promise<ChatState> {
+  const it = await kv.get<ChatState>(KEY(chatId));
+  return it.value ?? { step: "idle" };
+}
+
+// атомарно пишем
+export async function setState(chatId: number, state: ChatState): Promise<void> {
+  const key = KEY(chatId);
+  const cur = await kv.get<ChatState>(key);
+  const tx = kv.atomic().check({ key, versionstamp: cur.versionstamp }).set(key, state);
+  const res = await tx.commit();
+  if (!res.ok) {
+    // редкая гонка — повтор
+    await setState(chatId, state);
+  }
+}
+
+// сброс
+export async function reset(chatId: number): Promise<void> {
+  await kv.set(KEY(chatId), { step: "idle" } as ChatState);
+}
