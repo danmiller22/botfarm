@@ -1,4 +1,3 @@
-// In-memory session store. Good enough for step 1.
 export type ReportState =
   | { step: "idle" }
   | { step: "await_unit_type" }
@@ -19,16 +18,10 @@ export type ReportData = {
   notes?: string;
   file_id?: string;
   file_kind?: "photo" | "document";
+  invoice_url?: string;
 };
 
 const sessions = new Map<number, ReportState>();
-
-export function getState(chatId: number): ReportState {
-  return sessions.get(chatId) ?? { step: "idle" };
-}
-export function setState(chatId: number, state: ReportState) {
-  sessions.set(chatId, state);
-}
-export function reset(chatId: number) {
-  sessions.set(chatId, { step: "idle" });
-}
+export function getState(chatId: number): ReportState { return sessions.get(chatId) ?? { step: "idle" }; }
+export function setState(chatId: number, state: ReportState) { sessions.set(chatId, state); }
+export function reset(chatId: number) { sessions.set(chatId, { step: "idle" }); }
