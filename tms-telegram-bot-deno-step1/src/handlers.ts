@@ -20,11 +20,9 @@ const RM       = { remove_keyboard: true } as const;
 
 /* ============= идемпотентность/дебаунс ============ */
 
-// дроп дубликатов Telegram
-const seenUpdates = new Set<string>();   // `${chatId}:${update_id}`
-const seenMessages = new Set<string>();  // `${chatId}:${message_id}`
+const seenUpdates  = new Set<string>();   // `${chatId}:${update_id}`
+const seenMessages = new Set<string>();   // `${chatId}:${message_id}`
 
-// дебаунс одинаковых подсказок
 const lastPrompt = new Map<number, { key: string; ts: number }>();
 const PROMPT_DEBOUNCE_MS = 2000;
 
@@ -38,17 +36,12 @@ export async function onUpdate(update: Update) {
   const kU = `${chatId}:${update.update_id}`;
   const kM = msg.message_id ? `${chatId}:${msg.message_id}` : "";
 
-  // отбрасываем повторные доставки
   if (seenUpdates.has(kU) || (kM && seenMessages.has(kM))) return;
-  seenUpdates.add(kU);
-  if (kM) seenMessages.add(kM);
+  seenUpdates.add(kU); if (kM) seenMessages.add(kM);
   if (seenUpdates.size > 2000) seenUpdates.clear();
   if (seenMessages.size > 4000) seenMessages.clear();
 
-  // атомарная обработка по chat_id (Deno KV lock)
-  await withLock(chatId, async () => {
-    await handle(msg);
-  });
+  await withLock(chatId, async () => { await handle(msg); });
 }
 
 /* ================== FLOW ================= */
@@ -58,12 +51,18 @@ async function handle(msg: Message) {
   const raw = (getText(msg) ?? "").trim();
   const t = raw.toLowerCase();
 
-  // глобальные команды
-  if (t === "/start" || t === "/cancel") return ready(chatId);
+  // глобальные / команда Dashboard всегда доступна
   if (t === "dashboard") { send(chatId, DASHBOARD_URL, KB_MAIN); return; }
-  if (t === "new report") return startFlow(chatId);
 
   const state = getState(chatId) as any as { step: Step; data?: any };
+
+  // /start и /cancel: если в середине опроса — НЕ сбрасываем, а повторяем текущий вопрос
+  if (t === "/start" || t === "/cancel") {
+    if (state?.step && state.step !== "idle") return resendCurrentPrompt(chatId, state.step);
+    return ready(chatId);
+  }
+
+  if (t === "new report") return startFlow(chatId);
 
   switch (state.step) {
     case "await_unit_type": {
@@ -118,12 +117,11 @@ async function handle(msg: Message) {
       const file = extractFileId(msg);
       if (!file) return askOnce(chatId, "invoice", "Send invoice (photo or PDF):", RM);
 
-      // мгновенный ответ пользователю и перевод в idle
+      // мгновенный отклик и перевод в idle
       const cur = getState(chatId) as any;
       setState(chatId, { step: "idle", data: cur.data });
       send(chatId, "Saving…", RM);
 
-      // фон: загрузка+запись+финальный ответ
       finalizeAsync(msg, file).catch(() => {
         send(chatId, "Error while saving. Try again.", KB_MAIN);
         reset(chatId);
@@ -132,7 +130,7 @@ async function handle(msg: Message) {
     }
 
     default:
-      return; // не перезапускаем поток автоматически
+      return; // ничего не шлём и не ресетим
   }
 }
 
@@ -173,11 +171,24 @@ function ready(chatId: number) {
   reset(chatId);
   send(chatId, "Ready.", KB_MAIN);
 }
-
 function startFlow(chatId: number) {
   reset(chatId);
   setState(chatId, { step: "await_unit_type" } as any);
   send(chatId, "Unit:", KB_UNIT);
+}
+function resendCurrentPrompt(chatId: number, step: Step) {
+  switch (step) {
+    case "await_unit_type":            return askOnce(chatId, "unit", "Unit:", KB_UNIT);
+    case "await_truck_number":         return askOnce(chatId, "truck_num", "Truck #:", RM);
+    case "await_trailer_number":       return askOnce(chatId, "trailer_num", "Trailer #:", RM);
+    case "await_trailer_truck_number": return askOnce(chatId, "tr_truck", "Truck # with this trailer:", RM);
+    case "await_description":          return askOnce(chatId, "desc", "Describe the issue:", RM);
+    case "await_paidby":               return askOnce(chatId, "paidby", "Paid By:", KB_PAID);
+    case "await_total":                return askOnce(chatId, "total", "Total amount (e.g. 525.94):", RM);
+    case "await_notes":                return askOnce(chatId, "notes", "Notes (optional). Send text or '-' to skip:", RM);
+    case "await_invoice":              return askOnce(chatId, "invoice", "Send invoice (photo or PDF):", RM);
+    default:                           return startFlow(chatId);
+  }
 }
 
 // fire-and-forget; не ждём сеть
@@ -190,7 +201,6 @@ function askOnce(chatId: number, key: string, text: string, reply_markup?: any) 
     if (lastPrompt.size > 2000) lastPrompt.clear();
   }
 }
-// fire-and-forget helper
 function send(chatId: number, text: string, reply_markup?: any) {
   void sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) }).catch(() => {});
 }
