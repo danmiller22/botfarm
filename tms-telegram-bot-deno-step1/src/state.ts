@@ -23,15 +23,13 @@ export async function getState(chatId: number): Promise<ChatState> {
   const it = await kv.get<ChatState>(KEY(chatId));
   return it.value ?? { step: "idle" };
 }
-
 export async function setState(chatId: number, state: ChatState): Promise<void> {
   const key = KEY(chatId);
   const cur = await kv.get<ChatState>(key);
   const tx = kv.atomic().check({ key, versionstamp: cur.versionstamp }).set(key, state);
   const res = await tx.commit();
-  if (!res.ok) await setState(chatId, state); // редкая гонка — повтор
+  if (!res.ok) await setState(chatId, state);
 }
-
 export async function reset(chatId: number): Promise<void> {
   await kv.set(KEY(chatId), { step: "idle" } as ChatState);
 }
