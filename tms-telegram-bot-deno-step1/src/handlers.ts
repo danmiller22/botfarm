@@ -3,40 +3,53 @@ import { TELEGRAM_TOKEN } from "./env.ts";
 import { getState, setState, reset, type ReportData } from "./state.ts";
 import { driveUpload, sheetsAppend } from "./google.ts";
 
-const kb_main = { keyboard: [[{ text: "New report" }]], resize_keyboard: true, one_time_keyboard: false };
+const DASHBOARD_URL = "https://danmiller22.github.io/us-team-fleet-dashboard/";
+
+// reply-keyboard: New report + Dashboard
+const kb_main = {
+  keyboard: [[{ text: "New report" }, { text: "Dashboard" }]],
+  resize_keyboard: true,
+  one_time_keyboard: false,
+};
 const kb_unit = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_keyboard: true, one_time_keyboard: true };
 const kb_paid = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
 
-// анти-спам: не дублировать одинаковые подсказки
+// анти-спам
 const promptedPaid = new Set<number>();
+const promptedTotal = new Set<number>();
 const promptedInvoice = new Set<number>();
 
+type Step =
+  | "idle" | "await_unit_type" | "await_truck_number" | "await_trailer_number"
+  | "await_trailer_truck_number" | "await_description" | "await_paidby"
+  | "await_total" | "await_notes" | "await_invoice";
+
 export async function onUpdate(update: Update) {
-  // только обычные сообщения, чтобы не было дублей
   const msg = update.message;
   if (!msg) return;
 
   const chatId = msg.chat.id;
-  const textRaw = getText(msg);
-  const t = (textRaw ?? "").trim().toLowerCase();
+  const textRaw = getText(msg) ?? "";
+  const t = textRaw.trim().toLowerCase();
 
-  // entry
+  // меню
   if (t === "/start") {
     await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
-    reset(chatId);
-    promptedPaid.delete(chatId);
-    promptedInvoice.delete(chatId);
+    resetAll(chatId);
+    return;
+  }
+  if (t === "dashboard") {
+    await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: `Dashboard: ${DASHBOARD_URL}`, reply_markup: kb_main });
     return;
   }
   if (t === "new report") {
-    setState(chatId, { step: "await_unit_type" });
-    promptedPaid.delete(chatId);
-    promptedInvoice.delete(chatId);
+    setState(chatId, { step: "await_unit_type" } as any);
+    resetAll(chatId);
     await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Unit:", reply_markup: kb_unit });
     return;
   }
 
-  const state = getState(chatId);
+  const state = getState(chatId) as any as { step: Step; data?: Partial<ReportData & { total?: string }> };
 
   switch (state.step) {
     case "await_unit_type": {
@@ -96,19 +109,32 @@ export async function onUpdate(update: Update) {
     }
 
     case "await_paidby": {
-      // принимаем короткие варианты
       const isCompany = ["company", "c", "comp"].includes(t);
       const isDriver = ["driver", "d"].includes(t);
       if (isCompany || isDriver) {
-        setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), paidBy: (isCompany ? "company" : "driver") as "company" | "driver" } });
+        setState(chatId, { step: "await_total", data: { ...(state.data ?? {}), paidBy: (isCompany ? "company" : "driver") as "company" | "driver" } });
         promptedPaid.delete(chatId);
-        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Notes (optional). Send text or '-' to skip:" });
+        promptedTotal.delete(chatId);
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Total amount (e.g. 525.94):" });
         return;
       }
-      // показываем подсказку только ОДИН раз
       if (!promptedPaid.has(chatId)) {
         promptedPaid.add(chatId);
         await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Choose: company or driver", reply_markup: kb_paid });
+      }
+      return;
+    }
+
+    case "await_total": {
+      const amount = parseAmount(textRaw);
+      if (amount !== null) {
+        setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), total: amount } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Notes (optional). Send text or '-' to skip:" });
+        return;
+      }
+      if (!promptedTotal.has(chatId)) {
+        promptedTotal.add(chatId);
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Enter a number like 120, 120.50 or $120.50" });
       }
       return;
     }
@@ -127,7 +153,6 @@ export async function onUpdate(update: Update) {
     case "await_invoice": {
       const file = extractFileId(msg);
       if (!file) {
-        // один мягкий напоминатель и молчим дальше
         if (!promptedInvoice.has(chatId)) {
           promptedInvoice.add(chatId);
           await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Need a photo or a document (PDF/JPG)." });
@@ -144,43 +169,64 @@ export async function onUpdate(update: Update) {
       const up = await driveUpload(filename, fr.headers.get("content-type") ?? undefined, buf);
       const link = `https://drive.google.com/uc?id=${up.id}`;
 
-      const data = { ...(state.data ?? {}) } as ReportData;
+      const data = { ...(state.data ?? {}) } as ReportData & { total?: string };
       const dateStr = new Date().toLocaleDateString("en-US");
       const asset = data.unitType === "Truck"
         ? `truck ${data.truck ?? ""}`.trim()
         : `TRL ${data.trailer ?? ""} ( unit ${data.truck ?? ""} )`.replace("  ", " ");
       const repair = data.description ?? "";
+      const total = data.total ?? "";
       const paidBy = data.paidBy ?? "";
       const comments = data.notes ?? "";
       const reportedBy = who(msg);
 
       // A..H: Date | Asset | Repair | Total | PaidBy | ReportedBy | InvoiceLink | Comments
-      const row = [dateStr, asset, repair, "", paidBy, reportedBy, link, comments];
+      const row = [dateStr, asset, repair, total, paidBy, reportedBy, link, comments];
       await sheetsAppend(row);
 
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link });
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
 
-      reset(chatId);
-      promptedPaid.delete(chatId);
-      promptedInvoice.delete(chatId);
+      resetAll(chatId);
       return;
     }
   }
+  // idle — молчим
+}
 
-  // неизвестный/idle — молчим
+/* helpers */
+
+function resetAll(chatId: number) {
+  reset(chatId);
+  promptedPaid.delete(chatId);
+  promptedTotal.delete(chatId);
+  promptedInvoice.delete(chatId);
 }
 
 function who(m: Message) {
   return m.from?.username ? "@"+m.from.username : [m.from?.first_name, m.from?.last_name].filter(Boolean).join(" ");
 }
+
 function extractFileId(m: Message): { file_id: string; kind: "photo" | "document" } | null {
   if (m.photo && m.photo.length > 0) return { file_id: m.photo[m.photo.length - 1].file_id, kind: "photo" };
   if (m.document) return { file_id: m.document.file_id, kind: "document" };
   return null;
 }
+
 function suggestName(m: Message, kind: "photo" | "document") {
   const base = Date.now();
   const whoPart = m.from?.username ? m.from.username : (m.from?.first_name ?? "user");
   return `${whoPart}_${base}.${kind === "photo" ? "jpg" : "pdf"}`;
+}
+
+//  " $1,234.50 " -> "1234.50"; "120" -> "120"; "120,50" -> "120.50"
+function parseAmount(s: string): string | null {
+  if (!s) return null;
+  let x = s.trim()
+    .replace(/[^\d,.\-]/g, "")        // убираем всё кроме цифр и разделителей
+    .replace(/,/g, ".");              // запятые как точки
+  if (!x || !/^[-]?\d*\.?\d*$/.test(x)) return null;
+  const n = Number(x);
+  if (!isFinite(n)) return null;
+  return n.toFixed(2).replace(/\.00$/, (/\./.test(x) ? ".00" : "")); // если ввели целое без точки — оставим без .00
 }
