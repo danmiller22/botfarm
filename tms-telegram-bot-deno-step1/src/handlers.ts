@@ -65,7 +65,9 @@ export async function onUpdate(update: Update) {
 
       const data = { ...(state.data ?? {}) } as ReportData;
       const dateStr = new Date().toLocaleDateString("en-US");
-      const asset = data.unitType === "Truck" ? `truck ${data.truck ?? ""}`.trim() : `TRL ${data.trailer ?? ""} ( unit ${data.truck ?? ""} )`.replace("  "," ");
+      const asset = data.unitType === "Truck"
+        ? `truck ${data.truck ?? ""}`.trim()
+        : `TRL ${data.trailer ?? ""} ( unit ${data.truck ?? ""} )`.replace("  "," ");
       const repair = data.description ?? "";
       const paidBy = data.paidBy ?? "";
       const comments = data.notes ?? "";
@@ -82,7 +84,9 @@ export async function onUpdate(update: Update) {
   await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Press New report to start.", reply_markup: kb_main });
 }
 
-function who(m: Message) { return m.from?.username ? "@"+m.from.username : [m.from?.first_name, m.from?.last_name].filter(Boolean).join(" "); }
+function who(m: Message) {
+  return m.from?.username ? "@"+m.from.username : [m.from?.first_name, m.from?.last_name].filter(Boolean).join(" ");
+}
 function extractFileId(m: Message): { file_id: string; kind: "photo" | "document" } | null {
   if (m.photo && m.photo.length > 0) return { file_id: m.photo[m.photo.length - 1].file_id, kind: "photo" };
   if (m.document) return { file_id: m.document.file_id, kind: "document" };
