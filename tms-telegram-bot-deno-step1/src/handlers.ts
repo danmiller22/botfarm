@@ -5,15 +5,15 @@ import { driveUpload, sheetsAppend } from "./google.ts";
 
 const DASHBOARD_URL = "https://danmiller22.github.io/us-team-fleet-dashboard/";
 
-const kb_main = { keyboard: [[{ text: "New report" }, { text: "Dashboard" }]], resize_keyboard: true, one_time_keyboard: false };
-const kb_unit = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_keyboard: true, one_time_keyboard: true };
-const kb_paid = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
-const rm = { remove_keyboard: true } as const;
-
 type Step =
   | "idle" | "await_unit_type" | "await_truck_number" | "await_trailer_number"
   | "await_trailer_truck_number" | "await_description" | "await_paidby"
   | "await_total" | "await_notes" | "await_invoice";
+
+const KB_MAIN = { keyboard: [[{ text: "New report" }, { text: "Dashboard" }]], resize_keyboard: true, one_time_keyboard: false };
+const KB_UNIT = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_keyboard: true, one_time_keyboard: true };
+const KB_PAID = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
+const RM = { remove_keyboard: true } as const;
 
 export async function onUpdate(update: Update) {
   const msg = update.message;
@@ -23,67 +23,88 @@ export async function onUpdate(update: Update) {
   const raw = (getText(msg) ?? "").trim();
   const t = raw.toLowerCase();
 
+  // меню
   if (t === "/start" || t === "/cancel") return ready(chatId);
-  if (t === "dashboard") { await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: `Dashboard: ${DASHBOARD_URL}`, reply_markup: kb_main }); return; }
+  if (t === "dashboard") { await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: DASHBOARD_URL, reply_markup: KB_MAIN }); return; }
   if (t === "new report") return startFlow(chatId);
 
   const state = getState(chatId) as any as { step: Step; data?: any };
 
   switch (state.step) {
     case "await_unit_type": {
-      if (t === "truck") { setState(chatId, { step: "await_truck_number", data: { unitType: "Truck" } }); return send(chatId, "Truck #:", rm); }
-      if (t === "trailer") { setState(chatId, { step: "await_trailer_number", data: { unitType: "Trailer" } }); return send(chatId, "Trailer #:", rm); }
-      return send(chatId, "Choose Truck or Trailer", kb_unit);
+      if (t === "truck") {
+        setState(chatId, { step: "await_truck_number", data: { unitType: "Truck" } });
+        return ask(chatId, "Truck #:", RM);
+      }
+      if (t === "trailer") {
+        setState(chatId, { step: "await_trailer_number", data: { unitType: "Trailer" } });
+        return ask(chatId, "Trailer #:", RM);
+      }
+      return ask(chatId, "Unit:", KB_UNIT);
     }
 
     case "await_truck_number": {
-      if (raw) { setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw, unitType: "Truck" } }); return send(chatId, "Describe the issue:", rm); }
-      return send(chatId, "Truck #: enter a number", rm);
+      if (raw) {
+        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw, unitType: "Truck" } });
+        return ask(chatId, "Describe the issue:", RM);
+      }
+      return ask(chatId, "Truck #:", RM);
     }
 
     case "await_trailer_number": {
-      if (raw) { setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: raw, unitType: "Trailer" } }); return send(chatId, "Truck # with this trailer:", rm); }
-      return send(chatId, "Trailer #: enter a number", rm);
+      if (raw) {
+        setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: raw, unitType: "Trailer" } });
+        return ask(chatId, "Truck # with this trailer:", RM);
+      }
+      return ask(chatId, "Trailer #:", RM);
     }
 
     case "await_trailer_truck_number": {
-      if (raw) { setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw } }); return send(chatId, "Describe the issue:", rm); }
-      return send(chatId, "Truck # with this trailer: enter a number", rm);
+      if (raw) {
+        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw } });
+        return ask(chatId, "Describe the issue:", RM);
+      }
+      return ask(chatId, "Truck # with this trailer:", RM);
     }
 
     case "await_description": {
-      if (raw) { setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: raw } }); return send(chatId, "Paid By:", kb_paid); }
-      return send(chatId, "Describe the issue:", rm);
+      if (raw) {
+        setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: raw } });
+        return ask(chatId, "Paid By:", KB_PAID);
+      }
+      return ask(chatId, "Describe the issue:", RM);
     }
 
     case "await_paidby": {
-      const isCompany = ["company", "c", "comp"].includes(t);
-      const isDriver = ["driver", "d"].includes(t);
-      if (isCompany || isDriver) {
-        setState(chatId, { step: "await_total", data: { ...(state.data ?? {}), paidBy: isCompany ? "company" : "driver" } });
-        return send(chatId, "Total amount (e.g. 525.94):", rm);
+      if (t === "company" || t === "driver") {
+        setState(chatId, { step: "await_total", data: { ...(state.data ?? {}), paidBy: t } });
+        return ask(chatId, "Total amount (e.g. 525.94):", RM);
       }
-      return send(chatId, "Choose: company or driver", kb_paid);
+      return ask(chatId, "Paid By:", KB_PAID);
     }
 
     case "await_total": {
       const amount = parseAmount(raw);
-      if (amount !== null) { setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), total: amount } }); return send(chatId, "Notes (optional). Send text or '-' to skip:", rm); }
-      return send(chatId, "Enter a number like 120, 120.50 or $120.50", rm);
+      if (amount !== null) {
+        setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), total: amount } });
+        return ask(chatId, "Notes (optional). Send text or '-' to skip:", RM);
+      }
+      return ask(chatId, "Total amount (e.g. 525.94):", RM);
     }
 
     case "await_notes": {
       setState(chatId, { step: "await_invoice", data: { ...(state.data ?? {}), notes: (raw && raw !== "-") ? raw : undefined } });
-      return send(chatId, "Send invoice (photo or PDF):", rm);
+      return ask(chatId, "Send invoice (photo or PDF):", RM);
     }
 
     case "await_invoice": {
       const file = extractFileId(msg);
-      if (!file) return; // ждём файл без спама
-      const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
-      if (!fUrl) return send(chatId, "Cannot fetch file.", rm);
+      if (!file) return ask(chatId, "Send invoice (photo or PDF):", RM);
 
-      const fr = await fetch(fUrl.url);
+      const f = await getFileURL(TELEGRAM_TOKEN, file.file_id);
+      if (!f) return ask(chatId, "Cannot fetch file.", RM);
+
+      const fr = await fetch(f.url);
       const buf = new Uint8Array(await fr.arrayBuffer());
       const filename = suggestName(msg, file.kind);
       const up = await driveUpload(filename, fr.headers.get("content-type") ?? undefined, buf);
@@ -97,7 +118,7 @@ export async function onUpdate(update: Update) {
       const row = [dateStr, asset, d.description ?? "", d.total ?? "", d.paidBy ?? "", who(msg), link, d.notes ?? ""];
       await sheetsAppend(row);
 
-      await send(chatId, "Saved. " + link, rm);
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link, reply_markup: RM });
       return ready(chatId);
     }
 
@@ -109,14 +130,14 @@ export async function onUpdate(update: Update) {
 /* helpers */
 async function ready(chatId: number) {
   reset(chatId);
-  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
+  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: KB_MAIN });
 }
 async function startFlow(chatId: number) {
   reset(chatId);
   setState(chatId, { step: "await_unit_type" } as any);
-  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Unit:", reply_markup: kb_unit });
+  await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Unit:", reply_markup: KB_UNIT });
 }
-async function send(chatId: number, text: string, reply_markup?: any) {
+async function ask(chatId: number, text: string, reply_markup?: any) {
   await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text, ...(reply_markup ? { reply_markup } : {}) });
 }
 function who(m: Message) { return m.from?.username ? "@"+m.from.username : [m.from?.first_name, m.from?.last_name].filter(Boolean).join(" "); }
