@@ -57,6 +57,7 @@ export async function onUpdate(update: Update) {
       if (!file) { await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Need a photo or a document (PDF/JPG). Try again:" }); return; }
       const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
       if (!fUrl) { await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Cannot fetch file." }); return; }
+
       const fr = await fetch(fUrl.url);
       const buf = new Uint8Array(await fr.arrayBuffer());
       const filename = suggestName(msg, file.kind);
@@ -72,7 +73,9 @@ export async function onUpdate(update: Update) {
       const paidBy = data.paidBy ?? "";
       const comments = data.notes ?? "";
       const reportedBy = who(msg);
-      const row = [dateStr, asset, repair, "", link, paidBy, comments, reportedBy];
+
+      // A..H: Date | Asset | Repair | Total | PaidBy | ReportedBy | InvoiceLink | Comments
+      const row = [dateStr, asset, repair, "", paidBy, reportedBy, link, comments];
 
       await sheetsAppend(row);
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link, reply_markup: { remove_keyboard: true } });
