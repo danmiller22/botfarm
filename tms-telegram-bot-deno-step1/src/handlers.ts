@@ -2,6 +2,7 @@ import { sendMessage, getText, getFileURL, type Update, type Message } from "./t
 import { TELEGRAM_TOKEN } from "./env.ts";
 import { getState, setState, reset, type ReportData } from "./state.ts";
 import { driveUpload, sheetsAppend } from "./google.ts";
+import { withLock } from "./kv_lock.ts";
 
 /* ================== UI ================== */
 
@@ -18,9 +19,6 @@ const KB_PAID  = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize
 const RM       = { remove_keyboard: true } as const;
 
 /* ============= идемпотентность/дебаунс ============ */
-
-// глобальный мьютекс на чат
-const processing = new Set<number>();
 
 // дроп дубликатов Telegram
 const seenUpdates = new Set<string>();   // `${chatId}:${update_id}`
@@ -40,19 +38,17 @@ export async function onUpdate(update: Update) {
   const kU = `${chatId}:${update.update_id}`;
   const kM = msg.message_id ? `${chatId}:${msg.message_id}` : "";
 
+  // отбрасываем повторные доставки
   if (seenUpdates.has(kU) || (kM && seenMessages.has(kM))) return;
   seenUpdates.add(kU);
   if (kM) seenMessages.add(kM);
   if (seenUpdates.size > 2000) seenUpdates.clear();
   if (seenMessages.size > 4000) seenMessages.clear();
 
-  if (processing.has(chatId)) return;
-  processing.add(chatId);
-  try {
+  // атомарная обработка по chat_id (Deno KV lock)
+  await withLock(chatId, async () => {
     await handle(msg);
-  } finally {
-    processing.delete(chatId);
-  }
+  });
 }
 
 /* ================== FLOW ================= */
