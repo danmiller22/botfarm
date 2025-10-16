@@ -1,10 +1,10 @@
-// Deno KV lock with TTL (сериилизует обработку по chat_id)
+// Deno KV lock with TTL
 const kv = await Deno.openKv();
 const KEY = (chatId: number) => ["lock", chatId];
 
 export async function withLock<T>(chatId: number, fn: () => Promise<T>): Promise<T | undefined> {
   const key = KEY(chatId);
-  const ttlMs = 3000;
+  const ttlMs = 1500; // быстрее, чем раньше
   while (true) {
     const cur = await kv.get<number>(key);
     const now = Date.now();
@@ -14,6 +14,6 @@ export async function withLock<T>(chatId: number, fn: () => Promise<T>): Promise
         try { return await fn(); } finally { await kv.delete(key); }
       }
     }
-    await new Promise(r => setTimeout(r, 40));
+    await new Promise(r => setTimeout(r, 10));
   }
 }
