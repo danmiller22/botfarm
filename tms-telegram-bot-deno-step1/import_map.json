@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "grammy/types": "https://deno.land/x/grammy@v1.34.1/types.deno.ts"
+  }
+}
