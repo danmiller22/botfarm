@@ -39,6 +39,7 @@ export async function onUpdate(update: Update) {
         await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Trailer #:" });
         return;
       }
+      // тихо повторим выбор без спама
       await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Choose Truck or Trailer", reply_markup: kb_unit });
       return;
     }
@@ -72,25 +73,30 @@ export async function onUpdate(update: Update) {
     }
 
     case "await_paidby": {
-      if (text !== "company" && text !== "driver") {
-        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Choose: company or driver", reply_markup: kb_paid });
+      if (text === "company" || text === "driver") {
+        setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), paidBy: text as "company" | "driver" } });
+        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Notes (optional). Send text or '-' to skip:" });
         return;
       }
-      setState(chatId, { step: "await_notes", data: { ...(state.data ?? {}), paidBy: text as "company" | "driver" } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Notes (optional). Send text or '-' to skip:" });
+      // неправильный ввод — МОЛЧИМ, чтобы не спамить
       return;
     }
 
     case "await_notes": {
       setState(chatId, { step: "await_invoice", data: { ...(state.data ?? {}), notes: (text && text !== "-") ? text : undefined } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Send invoice (photo or PDF):" });
+      // убираем клавиатуру, чтобы случайно не нажимали
+      await sendMessage(TELEGRAM_TOKEN, {
+        chat_id: chatId,
+        text: "Send invoice (photo or PDF):",
+        reply_markup: { remove_keyboard: true }
+      });
       return;
     }
 
     case "await_invoice": {
       const file = extractFileId(msg);
       if (!file) {
-        await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Need a photo or a document (PDF/JPG). Try again:" });
+        // игнорируем любой текст/шум, не напоминаем постоянно
         return;
       }
       const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
@@ -117,16 +123,16 @@ export async function onUpdate(update: Update) {
 
       await sheetsAppend(row);
 
-      // reply and show main keyboard back
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link, reply_markup: { remove_keyboard: true } });
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Press New report to start.", reply_markup: kb_main });
+      // ответ + возвращаем основную клавиатуру
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link });
+      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Ready.", reply_markup: kb_main });
 
       reset(chatId);
       return;
     }
   }
 
-  // idle или неизвестный шаг: ничего не шлём, чтобы не спамить
+  // idle/неизвестный шаг — ничего не отправляем
 }
 
 function who(m: Message) {
