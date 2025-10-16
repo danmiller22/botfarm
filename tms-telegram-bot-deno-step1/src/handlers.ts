@@ -10,68 +10,63 @@ type Step =
   | "await_trailer_truck_number" | "await_description" | "await_paidby"
   | "await_total" | "await_notes" | "await_invoice";
 
-const KB_MAIN = { keyboard: [[{ text: "New report" }, { text: "Dashboard" }]], resize_keyboard: true, one_time_keyboard: false };
-const KB_UNIT = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_keyboard: true, one_time_keyboard: true };
-const KB_PAID = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
-const RM = { remove_keyboard: true } as const;
+const KB_MAIN  = { keyboard: [[{ text: "New report" }, { text: "Dashboard" }]], resize_keyboard: true, one_time_keyboard: false };
+const KB_UNIT  = { keyboard: [[{ text: "Truck" }, { text: "Trailer" }]], resize_keyboard: true, one_time_keyboard: true };
+const KB_PAID  = { keyboard: [[{ text: "company" }, { text: "driver" }]], resize_keyboard: true, one_time_keyboard: true };
+const RM       = { remove_keyboard: true } as const;
+
+// --- per-chat мьютекс, чтобы не было гонок шагов
+const processing = new Set<number>();
 
 export async function onUpdate(update: Update) {
   const msg = update.message;
   if (!msg) return;
+  const chatId = msg.chat.id;
 
+  if (processing.has(chatId)) return;         // уже обрабатываем предыдущее сообщение
+  processing.add(chatId);
+  try {
+    await handle(msg);
+  } finally {
+    processing.delete(chatId);
+  }
+}
+
+async function handle(msg: Message) {
   const chatId = msg.chat.id;
   const raw = (getText(msg) ?? "").trim();
   const t = raw.toLowerCase();
 
-  // меню
+  // глобальные кнопки/команды
   if (t === "/start" || t === "/cancel") return ready(chatId);
-  if (t === "dashboard") { await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: DASHBOARD_URL, reply_markup: KB_MAIN }); return; }
+  if (t === "dashboard") { await send(chatId, DASHBOARD_URL, KB_MAIN); return; }
   if (t === "new report") return startFlow(chatId);
 
   const state = getState(chatId) as any as { step: Step; data?: any };
-
   switch (state.step) {
     case "await_unit_type": {
-      if (t === "truck") {
-        setState(chatId, { step: "await_truck_number", data: { unitType: "Truck" } });
-        return ask(chatId, "Truck #:", RM);
-      }
-      if (t === "trailer") {
-        setState(chatId, { step: "await_trailer_number", data: { unitType: "Trailer" } });
-        return ask(chatId, "Trailer #:", RM);
-      }
+      if (t === "truck")   { setState(chatId, { step: "await_truck_number",   data: { unitType: "Truck" } });   return ask(chatId, "Truck #:", RM); }
+      if (t === "trailer") { setState(chatId, { step: "await_trailer_number", data: { unitType: "Trailer" } }); return ask(chatId, "Trailer #:", RM); }
       return ask(chatId, "Unit:", KB_UNIT);
     }
 
     case "await_truck_number": {
-      if (raw) {
-        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw, unitType: "Truck" } });
-        return ask(chatId, "Describe the issue:", RM);
-      }
+      if (raw) { setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw, unitType: "Truck" } }); return ask(chatId, "Describe the issue:", RM); }
       return ask(chatId, "Truck #:", RM);
     }
 
     case "await_trailer_number": {
-      if (raw) {
-        setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: raw, unitType: "Trailer" } });
-        return ask(chatId, "Truck # with this trailer:", RM);
-      }
+      if (raw) { setState(chatId, { step: "await_trailer_truck_number", data: { ...(state.data ?? {}), trailer: raw, unitType: "Trailer" } }); return ask(chatId, "Truck # with this trailer:", RM); }
       return ask(chatId, "Trailer #:", RM);
     }
 
     case "await_trailer_truck_number": {
-      if (raw) {
-        setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw } });
-        return ask(chatId, "Describe the issue:", RM);
-      }
+      if (raw) { setState(chatId, { step: "await_description", data: { ...(state.data ?? {}), truck: raw } }); return ask(chatId, "Describe the issue:", RM); }
       return ask(chatId, "Truck # with this trailer:", RM);
     }
 
     case "await_description": {
-      if (raw) {
-        setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: raw } });
-        return ask(chatId, "Paid By:", KB_PAID);
-      }
+      if (raw) { setState(chatId, { step: "await_paidby", data: { ...(state.data ?? {}), description: raw } }); return ask(chatId, "Paid By:", KB_PAID); }
       return ask(chatId, "Describe the issue:", RM);
     }
 
@@ -101,10 +96,10 @@ export async function onUpdate(update: Update) {
       const file = extractFileId(msg);
       if (!file) return ask(chatId, "Send invoice (photo or PDF):", RM);
 
-      const f = await getFileURL(TELEGRAM_TOKEN, file.file_id);
-      if (!f) return ask(chatId, "Cannot fetch file.", RM);
+      const fUrl = await getFileURL(TELEGRAM_TOKEN, file.file_id);
+      if (!fUrl) return ask(chatId, "Cannot fetch file.", RM);
 
-      const fr = await fetch(f.url);
+      const fr = await fetch(fUrl.url);
       const buf = new Uint8Array(await fr.arrayBuffer());
       const filename = suggestName(msg, file.kind);
       const up = await driveUpload(filename, fr.headers.get("content-type") ?? undefined, buf);
@@ -115,15 +110,18 @@ export async function onUpdate(update: Update) {
       const asset = d.unitType === "Truck"
         ? `truck ${d.truck ?? ""}`.trim()
         : `TRL ${d.trailer ?? ""} ( unit ${d.truck ?? ""} )`.replace("  ", " ");
+
+      // A..H
       const row = [dateStr, asset, d.description ?? "", d.total ?? "", d.paidBy ?? "", who(msg), link, d.notes ?? ""];
       await sheetsAppend(row);
 
-      await sendMessage(TELEGRAM_TOKEN, { chat_id: chatId, text: "Saved. " + link, reply_markup: RM });
+      await send(chatId, "Saved. " + link, RM);
       return ready(chatId);
     }
 
+    // неизвестный шаг — ничего не делаем, НЕ перезапускаем поток
     default:
-      return startFlow(chatId);
+      return;
   }
 }
 
